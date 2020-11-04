@@ -1,5 +1,4 @@
-/// Set memory size to 128MiB.
-pub const MEMORY_SIZE: u64 = 128 * 1024 * 1024;
+use crate::memory::{Memory, MEMORY_BASE, MEMORY_SIZE};
 
 /// The CPU contains registers, a program coutner, and memory.
 pub struct Cpu {
@@ -8,7 +7,7 @@ pub struct Cpu {
     /// Program counter point to the the memory address of the next instruction that would be executed.
     pub pc: u64,
     /// Memory to store executable instructions.
-    pub memory: Vec<u8>,
+    pub memory: Memory,
 }
 
 impl Cpu {
@@ -16,12 +15,12 @@ impl Cpu {
     pub fn new(binary: Vec<u8>) -> Self {
         let mut regs = [0; 32];
         // Set the register x2 with the size of a memory when a CPU is instantiated.
-        regs[2] = MEMORY_SIZE;
+        regs[2] = MEMORY_SIZE + MEMORY_BASE;
 
         Self {
             regs,
-            pc: 0,
-            memory: binary,
+            pc: MEMORY_BASE,
+            memory: Memory::new(binary),
         }
     }
 
@@ -40,11 +39,7 @@ impl Cpu {
 
     /// Fetch the instruction from memory.
     pub fn fetch(&self) -> u32 {
-        let index = self.pc as usize;
-        return (self.memory[index] as u32)
-            | ((self.memory[index + 1] as u32) << 8)
-            | ((self.memory[index + 2] as u32) << 16)
-            | ((self.memory[index + 3] as u32) << 24);
+        self.memory.load(self.pc, 32) as u32
     }
 
     /// Decode and execute an instruction.
@@ -101,7 +96,9 @@ impl Cpu {
                     // SLL
                     (0x1, 0x00) => self.regs[rd] = self.regs[rs1].wrapping_shl(shamt),
                     // SLT
-                    (0x2, 0x00) => self.regs[rd] = ((self.regs[rs1] as i64) < (self.regs[rs2] as i64)) as u64,
+                    (0x2, 0x00) => {
+                        self.regs[rd] = ((self.regs[rs1] as i64) < (self.regs[rs2] as i64)) as u64
+                    }
                     // SLTU
                     (0x3, 0x00) => self.regs[rd] = (self.regs[rs1] < self.regs[rs2]) as u64,
                     // XOR
@@ -109,7 +106,9 @@ impl Cpu {
                     // SRL
                     (0x5, 0x00) => self.regs[rd] = self.regs[rs1].wrapping_shr(shamt),
                     // SRA
-                    (0x5, 0x20) => self.regs[rd] = (self.regs[rs1] as i64).wrapping_shr(shamt) as u64,
+                    (0x5, 0x20) => {
+                        self.regs[rd] = (self.regs[rs1] as i64).wrapping_shr(shamt) as u64
+                    }
                     // OR
                     (0x6, 0x00) => self.regs[rd] = self.regs[rs1] | self.regs[rs2],
                     // AND

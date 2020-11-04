@@ -1,6 +1,8 @@
 mod cpu;
+mod memory;
 
 use crate::cpu::Cpu;
+use crate::memory::MEMORY_BASE;
 
 use std::io::prelude::*;
 
@@ -16,7 +18,7 @@ fn main() -> std::io::Result<()> {
 
     let mut cpu = Cpu::new(binary);
     // Instruction cycle
-    while cpu.pc < cpu.memory.len() as u64 {
+    while cpu.pc - MEMORY_BASE < cpu.memory.0.len() as u64 {
         // Fetch instruction
         let inst = cpu.fetch();
 
