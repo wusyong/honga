@@ -1,5 +1,4 @@
 mod cpu;
-mod memory;
 
 use crate::cpu::Cpu;
 

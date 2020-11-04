@@ -53,6 +53,8 @@ impl Cpu {
         let rd = ((inst & 0x00000f80) >> 7) as usize;
         let rs1 = ((inst & 0x000f8000) >> 15) as usize;
         let rs2 = ((inst & 0x01f00000) >> 20) as usize;
+        let funct3 = (inst & 0x00007000) >> 12;
+        let funct7 = (inst & 0xfe000000) >> 25;
 
         // Emulate that register x0 is hardwired with all bits equal to 0.
         self.regs[0] = 0;
@@ -60,14 +62,60 @@ impl Cpu {
         match opcode {
             // I-type
             0x13 => {
-                // addi
+                // ADDI
                 let imm = ((inst & 0xfff00000) as i32 as i64 >> 20) as u64;
-                self.regs[rd] = self.regs[rs1].wrapping_add(imm);
+                let shamt = (imm & 0x3f) as u32;
+                match funct3 {
+                    // ADDI
+                    0x0 => self.regs[rd] = self.regs[rs1].wrapping_add(imm),
+                    // SLLI
+                    0x1 => self.regs[rd] = self.regs[rs1] << shamt,
+                    // SLTI
+                    0x2 => self.regs[rd] = ((self.regs[rs1] as i64) < (imm as i64)) as u64,
+                    // SLTIU
+                    0x3 => self.regs[rd] = (self.regs[rs1] < imm) as u64,
+                    // XORI
+                    0x4 => self.regs[rd] = self.regs[rs1] ^ imm,
+                    0x5 => match funct7 {
+                        // SRLI
+                        0x00 => self.regs[rd] = self.regs[rs1].wrapping_shr(shamt),
+                        // SRAI
+                        0x20 => self.regs[rd] = (self.regs[rs1] as i64).wrapping_shr(shamt) as u64,
+                        _ => unreachable!(),
+                    },
+                    // ORI
+                    0x6 => self.regs[rd] = self.regs[rs1] | imm,
+                    // ANDI
+                    0x7 => self.regs[rd] = self.regs[rs1] & imm,
+                    _ => todo!(),
+                }
             }
             // S-type
             0x33 => {
-                // add
-                self.regs[rd] = self.regs[rs1].wrapping_add(self.regs[rs2]);
+                let shamt = ((self.regs[rs2] & 0x3f) as u64) as u32;
+                match (funct3, funct7) {
+                    // ADD
+                    (0x0, 0x00) => self.regs[rd] = self.regs[rs1].wrapping_add(self.regs[rs2]),
+                    // SUB
+                    (0x0, 0x20) => self.regs[rd] = self.regs[rs1].wrapping_sub(self.regs[rs2]),
+                    // SLL
+                    (0x1, 0x00) => self.regs[rd] = self.regs[rs1].wrapping_shl(shamt),
+                    // SLT
+                    (0x2, 0x00) => self.regs[rd] = ((self.regs[rs1] as i64) < (self.regs[rs2] as i64)) as u64,
+                    // SLTU
+                    (0x3, 0x00) => self.regs[rd] = (self.regs[rs1] < self.regs[rs2]) as u64,
+                    // XOR
+                    (0x4, 0x00) => self.regs[rd] = self.regs[rs1] ^ self.regs[rs2],
+                    // SRL
+                    (0x5, 0x00) => self.regs[rd] = self.regs[rs1].wrapping_shr(shamt),
+                    // SRA
+                    (0x5, 0x20) => self.regs[rd] = (self.regs[rs1] as i64).wrapping_shr(shamt) as u64,
+                    // OR
+                    (0x6, 0x00) => self.regs[rd] = self.regs[rs1] | self.regs[rs2],
+                    // AND
+                    (0x7, 0x00) => self.regs[rd] = self.regs[rs1] & self.regs[rs2],
+                    _ => todo!(),
+                }
             }
             _ => {
                 dbg!(format!("Opcode {:#x} isn't implemented yet.", opcode));
