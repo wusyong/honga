@@ -55,9 +55,49 @@ impl Cpu {
         self.regs[0] = 0;
 
         match opcode {
-            // I-type
+            0x03 => {
+                let imm = ((inst as i32 as i64) >> 20) as u64;
+                let address = self.regs[rs1].wrapping_add(imm);
+                match funct3 {
+                    // LB
+                    0x0 => {
+                        let value = self.memory.load(address, 8);
+                        self.regs[rd] = value as i8 as i64 as u64;
+                    }
+                    // LH
+                    0x1 => {
+                        let value = self.memory.load(address, 16);
+                        self.regs[rd] = value as i16 as i64 as u64;
+                    }
+                    // LW
+                    0x2 => {
+                        let value = self.memory.load(address, 32);
+                        self.regs[rd] = value as i32 as i64 as u64;
+                    }
+                    // LD
+                    0x3 => {
+                        let value = self.memory.load(address, 64);
+                        self.regs[rd] = value as i64 as u64;
+                    }
+                    // LBU
+                    0x4 => {
+                        let value = self.memory.load(address, 8);
+                        self.regs[rd] = value;
+                    }
+                    // LHU
+                    0x5 => {
+                        let value = self.memory.load(address, 16);
+                        self.regs[rd] = value;
+                    }
+                    // LWU
+                    0x6 => {
+                        let value = self.memory.load(address, 32);
+                        self.regs[rd] = value;
+                    }
+                    _ => unreachable!(),
+                }
+            }
             0x13 => {
-                // ADDI
                 let imm = ((inst & 0xfff00000) as i32 as i64 >> 20) as u64;
                 let shamt = (imm & 0x3f) as u32;
                 match funct3 {
@@ -85,7 +125,53 @@ impl Cpu {
                     _ => todo!(),
                 }
             }
-            // S-type
+            // AUIPC
+            0x17 => {
+                let imm = (inst & 0xfffff000) as i32 as i64 as u64;
+                self.regs[rd] = self.pc.wrapping_sub(4).wrapping_add(imm);
+            }
+            0x1b => {
+                let imm = ((inst as i32 as i64) >> 20) as u64;
+                let shamnt = (imm & 0x1f) as u32;
+                match funct3 {
+                    // ADDIW
+                    0x0 => self.regs[rd] = self.regs[rs1].wrapping_add(imm) as i32 as i64 as u64,
+                    // SLLIW
+                    0x1 => self.regs[rd] = self.regs[rs1].wrapping_shl(shamnt) as i32 as i64 as u64,
+                    0x5 => {
+                        match funct7 {
+                            // SRLIW
+                            0x00 => {
+                                self.regs[rd] = (self.regs[rs1] as u32).wrapping_shr(shamnt) as i32
+                                    as i64 as u64
+                            }
+                            // SRAIW
+                            0x20 => {
+                                self.regs[rd] =
+                                    (self.regs[rs1] as i32).wrapping_shr(shamnt) as i64 as u64
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    _ => todo!(),
+                }
+            }
+            0x23 => {
+                let imm = (((inst & 0xfe000000) as i32 as i64 >> 20) as u64)
+                    | ((inst >> 7) & 0x1f) as u64;
+                let address = self.regs[rs1].wrapping_add(imm);
+                match funct3 {
+                    // SB
+                    0x0 => self.memory.store(address, 8, self.regs[rs2]),
+                    // SH
+                    0x1 => self.memory.store(address, 16, self.regs[rs2]),
+                    // SW
+                    0x2 => self.memory.store(address, 32, self.regs[rs2]),
+                    // SD
+                    0x3 => self.memory.store(address, 64, self.regs[rs2]),
+                    _ => unreachable!(),
+                }
+            }
             0x33 => {
                 let shamt = ((self.regs[rs2] & 0x3f) as u64) as u32;
                 match (funct3, funct7) {
@@ -115,6 +201,97 @@ impl Cpu {
                     (0x7, 0x00) => self.regs[rd] = self.regs[rs1] & self.regs[rs2],
                     _ => todo!(),
                 }
+            }
+            // LUI
+            0x37 => self.regs[rd] = (inst & 0xfffff000) as i32 as i64 as u64,
+            0x3b => {
+                let shamt = (self.regs[rs2] & 0x1f) as u32;
+                match (funct3, funct7) {
+                    // ADDW
+                    (0x0, 0x00) => {
+                        self.regs[rd] =
+                            self.regs[rs1].wrapping_add(self.regs[rs2]) as i32 as i64 as u64
+                    }
+                    // SUBW
+                    (0x0, 0x20) => {
+                        self.regs[rd] = self.regs[rs1].wrapping_sub(self.regs[rs2]) as i32 as u64
+                    }
+                    // SLLW
+                    (0x1, 0x00) => {
+                        self.regs[rd] = (self.regs[rs1] as u32).wrapping_shl(shamt) as i32 as u64
+                    }
+                    // SRLW
+                    (0x5, 0x00) => {
+                        self.regs[rd] = (self.regs[rs1] as u32).wrapping_shr(shamt) as i32 as u64
+                    }
+                    // SRAW
+                    (0x5, 0x20) => {
+                        self.regs[rd] = ((self.regs[rs1] as i32) >> (shamt as i32)) as u64
+                    }
+                    _ => todo!(),
+                }
+            }
+            0x63 => {
+                let imm = ((inst & 0x80000000) as i32 as i64 >> 19) as u64
+                    | ((inst & 20) & 0x7e0) as u64
+                    | ((inst & 0x80) << 4) as u64
+                    | ((inst >> 7) & 0x1e) as u64;
+                match funct3 {
+                    // BEQ
+                    0x0 => {
+                        if self.regs[rs1] == self.regs[rs2] {
+                            self.pc = self.pc.wrapping_sub(4).wrapping_add(imm);
+                        }
+                    }
+                    // BNQ
+                    0x1 => {
+                        if self.regs[rs1] != self.regs[rs2] {
+                            self.pc = self.pc.wrapping_sub(4).wrapping_add(imm);
+                        }
+                    }
+                    // BLT
+                    0x4 => {
+                        if (self.regs[rs1] as i64) < (self.regs[rs2] as i64) {
+                            self.pc = self.pc.wrapping_sub(4).wrapping_add(imm);
+                        }
+                    }
+                    // BGE
+                    0x5 => {
+                        if (self.regs[rs1] as i64) >= (self.regs[rs2] as i64) {
+                            self.pc = self.pc.wrapping_sub(4).wrapping_add(imm);
+                        }
+                    }
+                    // BLTU
+                    0x6 => {
+                        if self.regs[rs1] < self.regs[rs2] {
+                            self.pc = self.pc.wrapping_sub(4).wrapping_add(imm);
+                        }
+                    }
+                    // BGEU
+                    0x7 => {
+                        if self.regs[rs1] >= self.regs[rs2] {
+                            self.pc = self.pc.wrapping_sub(4).wrapping_add(imm);
+                        }
+                    }
+                    _ => todo!(),
+                }
+            }
+            // JALR
+            0x67 => {
+                self.regs[rd] = self.pc;
+
+                let imm = ((((inst & 0xfff00000) as i32) as i64) >> 20) as u64;
+                self.pc = self.regs[rs1].wrapping_add(imm) & !1;
+            }
+            // JAL
+            0x6f => {
+                self.regs[rd] = self.pc;
+
+                let imm = (((inst & 0x80000000) as i32 as i64 >> 11) as u64)
+                    | ((inst >> 20) & 0x7fe) as u64
+                    | ((inst >> 9) & 0x800) as u64
+                    | (inst & 0xff000) as u64;
+                self.pc = self.pc.wrapping_sub(4).wrapping_add(imm);
             }
             _ => {
                 dbg!(format!("Opcode {:#x} isn't implemented yet.", opcode));
