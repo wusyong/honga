@@ -2,7 +2,6 @@ mod cpu;
 mod memory;
 
 use crate::cpu::Cpu;
-use crate::memory::MEMORY_BASE;
 
 use std::io::prelude::*;
 
@@ -18,7 +17,7 @@ fn main() -> std::io::Result<()> {
 
     let mut cpu = Cpu::new(binary);
     // Instruction cycle
-    while cpu.pc - MEMORY_BASE < cpu.memory.0.len() as u64 {
+    loop {
         // Fetch instruction
         let inst = cpu.fetch();
 
@@ -27,6 +26,10 @@ fn main() -> std::io::Result<()> {
 
         // Decode & Execute
         cpu.decode_execute(inst);
+
+        if cpu.pc == 0 {
+            break;
+        }
     }
     cpu.dump_registers();
 

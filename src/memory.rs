@@ -9,7 +9,9 @@ pub struct Memory(pub Vec<u8>);
 impl Memory {
     /// Create `Memory` with fixed memory size.
     pub fn new(binary: Vec<u8>) -> Self {
-        Self(binary)
+        let mut memory = vec![0u8; MEMORY_SIZE as usize];
+        memory.splice(..binary.len(), binary);
+        Self(memory)
     }
 
     /// Load bytes with requested size from little-endian memory.
