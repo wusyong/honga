@@ -1,4 +1,5 @@
 mod cpu;
+mod csr;
 mod memory;
 
 use crate::cpu::Cpu;
@@ -32,6 +33,6 @@ fn main() -> std::io::Result<()> {
         }
     }
     cpu.dump_registers();
-
+    cpu.dump_csr();
     Ok(())
 }

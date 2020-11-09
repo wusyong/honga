@@ -1,3 +1,4 @@
+use crate::csr;
 use crate::memory::{Memory, MEMORY_BASE, MEMORY_SIZE};
 
 /// The CPU contains registers, a program coutner, and memory.
@@ -8,6 +9,9 @@ pub struct Cpu {
     pub pc: u64,
     /// Memory to store executable instructions.
     pub memory: Memory,
+    /// Control & status registers. RISC-V has 12-bit encoding space csr[11:0] which contain 4096
+    /// csr.
+    pub csr: [u64; 4096],
 }
 
 impl Cpu {
@@ -21,6 +25,7 @@ impl Cpu {
             regs,
             pc: MEMORY_BASE,
             memory: Memory::new(binary),
+            csr: [0; 4096]
         }
     }
 
@@ -35,6 +40,33 @@ impl Cpu {
         for i in 0..32 {
             println!("x{:02}({})={:>#18x}", i, abi[i], self.regs[i],)
         }
+    }
+
+    /// Print values of selected CSRs.
+    pub fn dump_csr(&self) { 
+        println!("sstatus={:>#18x}", self.load_csr(csr::SSTATUS));
+        println!("scause ={:>#18x}", self.load_csr(csr::STVEC));
+        println!("sepc   ={:>#18x}", self.load_csr(csr::SEPC));
+        println!("mstatus={:>#18x}", self.load_csr(csr::MSTATUS));
+        println!("mcause ={:>#18x}", self.load_csr(csr::MTVEC));
+        println!("mepc   ={:>#18x}", self.load_csr(csr::MEPC));
+    }
+
+    /// Load the value from the CSR
+    pub fn load_csr(&self, address: usize) -> u64 {
+        match address {
+            csr::SIE => self.csr[csr::MIE] & self.csr[csr::MIDELEG],
+            _ => self.csr[address]
+        }
+    }
+
+    /// Store the value to the CSR
+    pub fn store_csr(&mut self, address: usize, value: u64) {
+        match address {
+            csr::SIE => self.csr[csr::MIE] = (self.csr[csr::MIE] & !self.csr[csr::MIDELEG]) | (value & self.csr[csr::MIDELEG]),
+            _ => self.csr[address] = value,
+        }
+    
     }
 
     /// Fetch the instruction from memory.
@@ -292,6 +324,45 @@ impl Cpu {
                     | ((inst >> 9) & 0x800) as u64
                     | (inst & 0xff000) as u64;
                 self.pc = self.pc.wrapping_sub(4).wrapping_add(imm);
+            }
+            0x73 => {
+                let address = ((inst & 0xfff00000) >> 20) as usize;
+                match funct3 {
+                    // CSRRW
+                    0x1 => {
+                        self.regs[rd] = self.load_csr(address);
+                        self.store_csr(address, self.regs[rs1]);
+                    }
+                    // CSRRS
+                    0x2 => {
+                        self.regs[rd] = self.load_csr(address);
+                        self.store_csr(address, self.regs[rd] | self.regs[rs1]);
+                    }
+                    // CSRRC
+                    0x3 => {
+                        self.regs[rd] = self.load_csr(address);
+                        self.store_csr(address, self.regs[rd] & !self.regs[rs1]);
+                    }
+                    // CSRRWI
+                    0x5 => {
+                        let uimm = rs1 as u64;
+                        self.regs[rd] = self.load_csr(address);
+                        self.store_csr(address, uimm);
+                    }
+                    // CSRRSI
+                    0x6 => {
+                        let uimm = rs1 as u64;
+                        self.regs[rd] = self.load_csr(address);
+                        self.store_csr(address, self.regs[rd] | uimm);
+                    }
+                    // CSRRCI
+                    0x7 => {
+                        let uimm = rs1 as u64;
+                        self.regs[rd] = self.load_csr(address);
+                        self.store_csr(address, self.regs[rd] & !uimm);
+                    }
+                    _ => todo!()
+                }
             }
             _ => {
                 dbg!(format!("Opcode {:#x} isn't implemented yet.", opcode));
