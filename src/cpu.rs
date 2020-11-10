@@ -1,6 +1,14 @@
 use crate::csr;
 use crate::memory::{Memory, MEMORY_BASE, MEMORY_SIZE};
 
+/// Privileged mode.
+#[repr(u8)]
+pub enum Mode {
+    User = 0,
+    Supervisor = 1,
+    Machine = 3,
+}
+
 /// The CPU contains registers, a program coutner, and memory.
 pub struct Cpu {
     /// 32 64-bit integer registers.
@@ -12,6 +20,8 @@ pub struct Cpu {
     /// Control & status registers. RISC-V has 12-bit encoding space csr[11:0] which contain 4096
     /// csr.
     pub csr: [u64; 4096],
+    /// Current privilege mode.
+    pub mode: Mode,
 }
 
 impl Cpu {
@@ -25,7 +35,8 @@ impl Cpu {
             regs,
             pc: MEMORY_BASE,
             memory: Memory::new(binary),
-            csr: [0; 4096]
+            csr: [0; 4096],
+            mode: Mode::Machine,
         }
     }
 
@@ -43,7 +54,7 @@ impl Cpu {
     }
 
     /// Print values of selected CSRs.
-    pub fn dump_csr(&self) { 
+    pub fn dump_csr(&self) {
         println!("sstatus={:>#18x}", self.load_csr(csr::SSTATUS));
         println!("scause ={:>#18x}", self.load_csr(csr::STVEC));
         println!("sepc   ={:>#18x}", self.load_csr(csr::SEPC));
@@ -56,17 +67,19 @@ impl Cpu {
     pub fn load_csr(&self, address: usize) -> u64 {
         match address {
             csr::SIE => self.csr[csr::MIE] & self.csr[csr::MIDELEG],
-            _ => self.csr[address]
+            _ => self.csr[address],
         }
     }
 
     /// Store the value to the CSR
     pub fn store_csr(&mut self, address: usize, value: u64) {
         match address {
-            csr::SIE => self.csr[csr::MIE] = (self.csr[csr::MIE] & !self.csr[csr::MIDELEG]) | (value & self.csr[csr::MIDELEG]),
+            csr::SIE => {
+                self.csr[csr::MIE] = (self.csr[csr::MIE] & !self.csr[csr::MIDELEG])
+                    | (value & self.csr[csr::MIDELEG])
+            }
             _ => self.csr[address] = value,
         }
-    
     }
 
     /// Fetch the instruction from memory.
@@ -204,11 +217,51 @@ impl Cpu {
                     _ => unreachable!(),
                 }
             }
+            // RV64A: "A" standard extension for atomic instructions
+            0x2f => {
+                let funct5 = (funct7 & 0x7c) >> 2;
+                let aq = (funct7 & 0x02) >> 1;
+                let rl = funct7 & 0x01;
+
+                match (funct3, funct5) {
+                    // AMOADD.W
+                    (0x2, 0x00) => {
+                        self.regs[rd] = self.memory.load(self.regs[rs1], 32);
+                        self.memory.store(
+                            self.regs[rs1],
+                            32,
+                            self.regs[rd].wrapping_add(self.regs[rs2]),
+                        );
+                    }
+                    // AMOADD.D
+                    (0x3, 0x00) => {
+                        self.regs[rd] = self.memory.load(self.regs[rs1], 64);
+                        self.memory.store(
+                            self.regs[rs1],
+                            64,
+                            self.regs[rd].wrapping_add(self.regs[rs2]),
+                        );
+                    }
+                    // AMOSWAP.W
+                    (0x2, 0x01) => {
+                        self.regs[rd] = self.memory.load(self.regs[rs1], 32);
+                        self.memory.store(self.regs[rs1], 32, self.regs[rs2]);
+                    }
+                    // AMOSWAP.D
+                    (0x3, 0x01) => {
+                        self.regs[rd] = self.memory.load(self.regs[rs1], 64);
+                        self.memory.store(self.regs[rs1], 64, self.regs[rs2]);
+                    }
+                    _ => unreachable!(),
+                }
+            }
             0x33 => {
                 let shamt = ((self.regs[rs2] & 0x3f) as u64) as u32;
                 match (funct3, funct7) {
                     // ADD
                     (0x0, 0x00) => self.regs[rd] = self.regs[rs1].wrapping_add(self.regs[rs2]),
+                    // MUL
+                    (0x0, 0x01) => self.regs[rd] = self.regs[rs1].wrapping_add(self.regs[rs2]),
                     // SUB
                     (0x0, 0x20) => self.regs[rd] = self.regs[rs1].wrapping_sub(self.regs[rs2]),
                     // SLL
@@ -223,6 +276,13 @@ impl Cpu {
                     (0x4, 0x00) => self.regs[rd] = self.regs[rs1] ^ self.regs[rs2],
                     // SRL
                     (0x5, 0x00) => self.regs[rd] = self.regs[rs1].wrapping_shr(shamt),
+                    // DIVU
+                    (0x5, 0x01) => {
+                        self.regs[rd] = match self.regs[rs2] {
+                            0 => 0xffffffff_ffffffff,
+                            _ => self.regs[rs1].wrapping_div(self.regs[rs2]),
+                        }
+                    }
                     // SRA
                     (0x5, 0x20) => {
                         self.regs[rd] = (self.regs[rs1] as i64).wrapping_shr(shamt) as u64
@@ -256,9 +316,25 @@ impl Cpu {
                     (0x5, 0x00) => {
                         self.regs[rd] = (self.regs[rs1] as u32).wrapping_shr(shamt) as i32 as u64
                     }
+                    // DIVUW
+                    (0x5, 0x01) => {
+                        self.regs[rd] = match self.regs[rs2] {
+                            0 => 0xffffffff_ffffffff,
+                            _ => (self.regs[rs1] as u32).wrapping_div(self.regs[rs2] as u32) as i32
+                                as u64,
+                        };
+                    }
                     // SRAW
                     (0x5, 0x20) => {
                         self.regs[rd] = ((self.regs[rs1] as i32) >> (shamt as i32)) as u64
+                    }
+                    // REMUW
+                    (0x7, 0x01) => {
+                        self.regs[rd] = match self.regs[rs2] {
+                            0 => self.regs[rs1],
+                            _ => (self.regs[rs1] as u32).wrapping_rem(self.regs[rs2] as u32) as i32
+                                as u64,
+                        };
                     }
                     _ => todo!(),
                 }
@@ -328,6 +404,61 @@ impl Cpu {
             0x73 => {
                 let address = ((inst & 0xfff00000) >> 20) as usize;
                 match funct3 {
+                    0x0 => {
+                        match (rs2, funct7) {
+                            // SRET
+                            (0x2, 0x8) => {
+                                self.pc = self.load_csr(csr::SEPC);
+
+                                let sstatus = self.load_csr(csr::SSTATUS);
+                                self.mode = match (sstatus >> 8) & 1 {
+                                    1 => Mode::Supervisor,
+                                    _ => Mode::User,
+                                };
+
+                                match (sstatus >> 5) & 1 {
+                                    1 => self.store_csr(csr::SSTATUS, sstatus | (1 << 1)),
+                                    _ => self.store_csr(csr::SSTATUS, sstatus & !(1 << 1)),
+                                }
+                                self.store_csr(
+                                    csr::SSTATUS,
+                                    self.load_csr(csr::SSTATUS) | (1 << 5),
+                                );
+                                self.store_csr(
+                                    csr::SSTATUS,
+                                    self.load_csr(csr::SSTATUS) & !(1 << 8),
+                                );
+                            }
+                            // MRET
+                            (0x2, 0x18) => {
+                                self.pc = self.load_csr(csr::MEPC);
+
+                                let mstatus = self.load_csr(csr::MSTATUS);
+                                self.mode = match (mstatus >> 11) & 0b11 {
+                                    2 => Mode::Machine,
+                                    1 => Mode::Supervisor,
+                                    _ => Mode::User,
+                                };
+
+                                match (mstatus >> 7) & 1 {
+                                    1 => self.store_csr(csr::MSTATUS, mstatus | (1 << 3)),
+                                    _ => self.store_csr(csr::MSTATUS, mstatus & !(1 << 3)),
+                                }
+
+                                self.store_csr(
+                                    csr::MSTATUS,
+                                    self.load_csr(csr::MSTATUS) | (1 << 7),
+                                );
+                                self.store_csr(
+                                    csr::MSTATUS,
+                                    self.load_csr(csr::MSTATUS) & !(3 << 11),
+                                );
+                            }
+                            // SFENCE.VMA
+                            (_, 0x9) => (),
+                            _ => todo!(),
+                        }
+                    }
                     // CSRRW
                     0x1 => {
                         self.regs[rd] = self.load_csr(address);
@@ -361,7 +492,7 @@ impl Cpu {
                         self.regs[rd] = self.load_csr(address);
                         self.store_csr(address, self.regs[rd] & !uimm);
                     }
-                    _ => todo!()
+                    _ => todo!(),
                 }
             }
             _ => {
