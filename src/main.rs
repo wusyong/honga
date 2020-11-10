@@ -1,6 +1,7 @@
 mod cpu;
 mod csr;
 mod memory;
+mod exception;
 
 use crate::cpu::Cpu;
 
@@ -20,13 +21,27 @@ fn main() -> std::io::Result<()> {
     // Instruction cycle
     loop {
         // Fetch instruction
-        let inst = cpu.fetch();
+        let inst = match cpu.fetch() {
+            Ok(i) => i,
+            Err(e) => {
+                e.get_trap(&mut cpu);
+                if e.is_fatal() {
+                    break;
+                }
+                0
+            }
+        };
 
         // Add 4 to the program counter
         cpu.pc += 4;
 
         // Decode & Execute
-        cpu.decode_execute(inst);
+        if let Err(e) = cpu.decode_execute(inst) {
+            e.get_trap(&mut cpu);
+            if e.is_fatal() {
+                break;
+            }
+        }
 
         if cpu.pc == 0 {
             break;

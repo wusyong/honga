@@ -1,3 +1,5 @@
+use crate::exception::Exception;
+
 /// Set memory size to 128MiB.
 pub const MEMORY_SIZE: u64 = 128 * 1024 * 1024;
 /// Address where QEMU virtual machine memory starts.
@@ -15,24 +17,24 @@ impl Memory {
     }
 
     /// Load bytes with requested size from little-endian memory.
-    pub fn load(&self, address: u64, size: usize) -> u64 {
+    pub fn load(&self, address: u64, size: usize) -> Result<u64, Exception> {
         match size {
-            8 => self.load_8bits(address),
-            16 => self.load_16bits(address),
-            32 => self.load_32bits(address),
-            64 => self.load_64bits(address),
-            _ => unreachable!("Unsupported size"),
+            8 => Ok(self.load_8bits(address)),
+            16 => Ok(self.load_16bits(address)),
+            32 => Ok(self.load_32bits(address)),
+            64 => Ok(self.load_64bits(address)),
+            _ => Err(Exception::LoadAddressMisaligned),
         }
     }
 
     /// Store bytes with requested size to little-endian memory.
-    pub fn store(&mut self, address: u64, size: usize, value: u64) {
+    pub fn store(&mut self, address: u64, size: usize, value: u64) -> Result<(), Exception> {
         match size {
-            8 => self.store_8bits(address, value),
-            16 => self.store_16bits(address, value),
-            32 => self.store_32bits(address, value),
-            64 => self.store_64bits(address, value),
-            _ => unreachable!("Unsupported size"),
+            8 => Ok(self.store_8bits(address, value)),
+            16 => Ok(self.store_16bits(address, value)),
+            32 => Ok(self.store_32bits(address, value)),
+            64 => Ok(self.store_64bits(address, value)),
+            _ => Err(Exception::LoadAddressMisaligned),
         }
     }
 

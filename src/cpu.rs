@@ -1,8 +1,10 @@
 use crate::csr;
 use crate::memory::{Memory, MEMORY_BASE, MEMORY_SIZE};
+use crate::exception::Exception;
 
 /// Privileged mode.
 #[repr(u8)]
+#[derive(Debug, Copy, Clone)]
 pub enum Mode {
     User = 0,
     Supervisor = 1,
@@ -83,12 +85,15 @@ impl Cpu {
     }
 
     /// Fetch the instruction from memory.
-    pub fn fetch(&self) -> u32 {
-        self.memory.load(self.pc, 32) as u32
+    pub fn fetch(&self) -> Result<u32, Exception> {
+        match self.memory.load(self.pc, 32) {
+            Ok(v) => Ok(v as u32),
+            Err(_) => Err(Exception::InstructionAccessFault),
+        }
     }
 
     /// Decode and execute an instruction.
-    pub fn decode_execute(&mut self, inst: u32) {
+    pub fn decode_execute(&mut self, inst: u32) -> Result<(), Exception> {
         let opcode = inst & 0x0000007f;
         let rd = ((inst & 0x00000f80) >> 7) as usize;
         let rs1 = ((inst & 0x000f8000) >> 15) as usize;
@@ -106,40 +111,46 @@ impl Cpu {
                 match funct3 {
                     // LB
                     0x0 => {
-                        let value = self.memory.load(address, 8);
+                        let value = self.memory.load(address, 8)?;
                         self.regs[rd] = value as i8 as i64 as u64;
                     }
                     // LH
                     0x1 => {
-                        let value = self.memory.load(address, 16);
+                        let value = self.memory.load(address, 16)?;
                         self.regs[rd] = value as i16 as i64 as u64;
                     }
                     // LW
                     0x2 => {
-                        let value = self.memory.load(address, 32);
+                        let value = self.memory.load(address, 32)?;
                         self.regs[rd] = value as i32 as i64 as u64;
                     }
                     // LD
                     0x3 => {
-                        let value = self.memory.load(address, 64);
+                        let value = self.memory.load(address, 64)?;
                         self.regs[rd] = value as i64 as u64;
                     }
                     // LBU
                     0x4 => {
-                        let value = self.memory.load(address, 8);
+                        let value = self.memory.load(address, 8)?;
                         self.regs[rd] = value;
                     }
                     // LHU
                     0x5 => {
-                        let value = self.memory.load(address, 16);
+                        let value = self.memory.load(address, 16)?;
                         self.regs[rd] = value;
                     }
                     // LWU
                     0x6 => {
-                        let value = self.memory.load(address, 32);
+                        let value = self.memory.load(address, 32)?;
                         self.regs[rd] = value;
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        println!(
+                            "Unsupported instruction: opcode {:x} funct3 {:x}",
+                            opcode, funct3
+                        );
+                        return Err(Exception::IllegalInstruction);
+                    }
                 }
             }
             0x13 => {
@@ -161,13 +172,13 @@ impl Cpu {
                         0x00 => self.regs[rd] = self.regs[rs1].wrapping_shr(shamt),
                         // SRAI
                         0x20 => self.regs[rd] = (self.regs[rs1] as i64).wrapping_shr(shamt) as u64,
-                        _ => unreachable!(),
+                        _ => (),
                     },
                     // ORI
                     0x6 => self.regs[rd] = self.regs[rs1] | imm,
                     // ANDI
                     0x7 => self.regs[rd] = self.regs[rs1] & imm,
-                    _ => todo!(),
+                    _ => (),
                 }
             }
             // AUIPC
@@ -195,10 +206,22 @@ impl Cpu {
                                 self.regs[rd] =
                                     (self.regs[rs1] as i32).wrapping_shr(shamnt) as i64 as u64
                             }
-                            _ => unreachable!(),
+                            _ => {
+                                println!(
+                                    "Unsupported instruction: opcode {:x} funct3 {:x} funct7 {:x}",
+                                    opcode, funct3, funct7
+                                );
+                                return Err(Exception::IllegalInstruction);
+                            }
                         }
                     }
-                    _ => todo!(),
+                    _ => {
+                        println!(
+                            "Unsupported instruction: opcode {:x} funct3 {:x}",
+                            opcode, funct3
+                        );
+                        return Err(Exception::IllegalInstruction);
+                    }
                 }
             }
             0x23 => {
@@ -207,14 +230,14 @@ impl Cpu {
                 let address = self.regs[rs1].wrapping_add(imm);
                 match funct3 {
                     // SB
-                    0x0 => self.memory.store(address, 8, self.regs[rs2]),
+                    0x0 => self.memory.store(address, 8, self.regs[rs2])?,
                     // SH
-                    0x1 => self.memory.store(address, 16, self.regs[rs2]),
+                    0x1 => self.memory.store(address, 16, self.regs[rs2])?,
                     // SW
-                    0x2 => self.memory.store(address, 32, self.regs[rs2]),
+                    0x2 => self.memory.store(address, 32, self.regs[rs2])?,
                     // SD
-                    0x3 => self.memory.store(address, 64, self.regs[rs2]),
-                    _ => unreachable!(),
+                    0x3 => self.memory.store(address, 64, self.regs[rs2])?,
+                    _ => (),
                 }
             }
             // RV64A: "A" standard extension for atomic instructions
@@ -226,33 +249,39 @@ impl Cpu {
                 match (funct3, funct5) {
                     // AMOADD.W
                     (0x2, 0x00) => {
-                        self.regs[rd] = self.memory.load(self.regs[rs1], 32);
+                        self.regs[rd] = self.memory.load(self.regs[rs1], 32)?;
                         self.memory.store(
                             self.regs[rs1],
                             32,
                             self.regs[rd].wrapping_add(self.regs[rs2]),
-                        );
+                        )?;
                     }
                     // AMOADD.D
                     (0x3, 0x00) => {
-                        self.regs[rd] = self.memory.load(self.regs[rs1], 64);
+                        self.regs[rd] = self.memory.load(self.regs[rs1], 64)?;
                         self.memory.store(
                             self.regs[rs1],
                             64,
                             self.regs[rd].wrapping_add(self.regs[rs2]),
-                        );
+                        )?;
                     }
                     // AMOSWAP.W
                     (0x2, 0x01) => {
-                        self.regs[rd] = self.memory.load(self.regs[rs1], 32);
-                        self.memory.store(self.regs[rs1], 32, self.regs[rs2]);
+                        self.regs[rd] = self.memory.load(self.regs[rs1], 32)?;
+                        self.memory.store(self.regs[rs1], 32, self.regs[rs2])?;
                     }
                     // AMOSWAP.D
                     (0x3, 0x01) => {
-                        self.regs[rd] = self.memory.load(self.regs[rs1], 64);
-                        self.memory.store(self.regs[rs1], 64, self.regs[rs2]);
+                        self.regs[rd] = self.memory.load(self.regs[rs1], 64)?;
+                        self.memory.store(self.regs[rs1], 64, self.regs[rs2])?;
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        println!(
+                            "Unsupported instruction: opcode {:x} funct3 {:x} funct7 {:x}",
+                            opcode, funct3, funct7
+                        );
+                        return Err(Exception::IllegalInstruction);
+                    }
                 }
             }
             0x33 => {
@@ -291,7 +320,13 @@ impl Cpu {
                     (0x6, 0x00) => self.regs[rd] = self.regs[rs1] | self.regs[rs2],
                     // AND
                     (0x7, 0x00) => self.regs[rd] = self.regs[rs1] & self.regs[rs2],
-                    _ => todo!(),
+                    _ => {
+                        println!(
+                            "Unsupported instruction: opcode {:x} funct3 {:x} funct7 {:x}",
+                            opcode, funct3, funct7
+                        );
+                        return Err(Exception::IllegalInstruction);
+                    }
                 }
             }
             // LUI
@@ -336,7 +371,13 @@ impl Cpu {
                                 as u64,
                         };
                     }
-                    _ => todo!(),
+                    _ => {
+                        println!(
+                            "Unsupported instruction: opcode {:x} funct3 {:x} funct7 {:x}",
+                            opcode, funct3, funct7
+                        );
+                        return Err(Exception::IllegalInstruction);
+                    }
                 }
             }
             0x63 => {
@@ -381,7 +422,13 @@ impl Cpu {
                             self.pc = self.pc.wrapping_sub(4).wrapping_add(imm);
                         }
                     }
-                    _ => todo!(),
+                    _ => {
+                        println!(
+                            "Unsupported instruction: opcode {:x} funct3 {:x}",
+                            opcode, funct3
+                        );
+                        return Err(Exception::IllegalInstruction);
+                    }
                 }
             }
             // JALR
@@ -406,6 +453,22 @@ impl Cpu {
                 match funct3 {
                     0x0 => {
                         match (rs2, funct7) {
+                            // ECALL
+                            (0x0, 0x0) => match self.mode {
+                                Mode::User => {
+                                    return Err(Exception::EnvironmentCallFromUMode);
+                                }
+                                Mode::Supervisor => {
+                                    return Err(Exception::EnvironmentCallFromSMode);
+                                }
+                                Mode::Machine => {
+                                    return Err(Exception::EnvironmentCallFromMMode);
+                                }
+                            },
+                            // EBREAK
+                            (0x1, 0x0) => {
+                                return Err(Exception::Breakpoint);
+                            }
                             // SRET
                             (0x2, 0x8) => {
                                 self.pc = self.load_csr(csr::SEPC);
@@ -456,7 +519,13 @@ impl Cpu {
                             }
                             // SFENCE.VMA
                             (_, 0x9) => (),
-                            _ => todo!(),
+                            _ => {
+                                println!(
+                                    "Unsupported instruction: opcode {:x} funct3 {:x} funct7 {:x}",
+                                    opcode, funct3, funct7
+                                );
+                                return Err(Exception::IllegalInstruction);
+                            }
                         }
                     }
                     // CSRRW
@@ -492,12 +561,20 @@ impl Cpu {
                         self.regs[rd] = self.load_csr(address);
                         self.store_csr(address, self.regs[rd] & !uimm);
                     }
-                    _ => todo!(),
+                    _ => {
+                        println!(
+                            "Unsupported instruction: opcode {:x} funct3 {:x}",
+                            opcode, funct3
+                        );
+                        return Err(Exception::IllegalInstruction);
+                    }
                 }
             }
             _ => {
-                dbg!(format!("Opcode {:#x} isn't implemented yet.", opcode));
+                println!("Unsupported instruction: opcode {:x}", opcode);
+                return Err(Exception::IllegalInstruction);
             }
         }
+        Ok(())
     }
 }
