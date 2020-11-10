@@ -1,6 +1,6 @@
+mod bus;
 mod cpu;
 mod csr;
-mod memory;
 mod exception;
 
 use crate::cpu::Cpu;

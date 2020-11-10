@@ -1,5 +1,5 @@
+use crate::bus::{Bus, MEMORY_BASE, MEMORY_SIZE};
 use crate::csr;
-use crate::memory::{Memory, MEMORY_BASE, MEMORY_SIZE};
 use crate::exception::Exception;
 
 /// Privileged mode.
@@ -18,7 +18,7 @@ pub struct Cpu {
     /// Program counter point to the the memory address of the next instruction that would be executed.
     pub pc: u64,
     /// Memory to store executable instructions.
-    pub memory: Memory,
+    pub bus: Bus,
     /// Control & status registers. RISC-V has 12-bit encoding space csr[11:0] which contain 4096
     /// csr.
     pub csr: [u64; 4096],
@@ -36,7 +36,7 @@ impl Cpu {
         Self {
             regs,
             pc: MEMORY_BASE,
-            memory: Memory::new(binary),
+            bus: Bus::new(binary),
             csr: [0; 4096],
             mode: Mode::Machine,
         }
@@ -86,7 +86,7 @@ impl Cpu {
 
     /// Fetch the instruction from memory.
     pub fn fetch(&self) -> Result<u32, Exception> {
-        match self.memory.load(self.pc, 32) {
+        match self.bus.load(self.pc, 32) {
             Ok(v) => Ok(v as u32),
             Err(_) => Err(Exception::InstructionAccessFault),
         }
@@ -111,37 +111,37 @@ impl Cpu {
                 match funct3 {
                     // LB
                     0x0 => {
-                        let value = self.memory.load(address, 8)?;
+                        let value = self.bus.load(address, 8)?;
                         self.regs[rd] = value as i8 as i64 as u64;
                     }
                     // LH
                     0x1 => {
-                        let value = self.memory.load(address, 16)?;
+                        let value = self.bus.load(address, 16)?;
                         self.regs[rd] = value as i16 as i64 as u64;
                     }
                     // LW
                     0x2 => {
-                        let value = self.memory.load(address, 32)?;
+                        let value = self.bus.load(address, 32)?;
                         self.regs[rd] = value as i32 as i64 as u64;
                     }
                     // LD
                     0x3 => {
-                        let value = self.memory.load(address, 64)?;
+                        let value = self.bus.load(address, 64)?;
                         self.regs[rd] = value as i64 as u64;
                     }
                     // LBU
                     0x4 => {
-                        let value = self.memory.load(address, 8)?;
+                        let value = self.bus.load(address, 8)?;
                         self.regs[rd] = value;
                     }
                     // LHU
                     0x5 => {
-                        let value = self.memory.load(address, 16)?;
+                        let value = self.bus.load(address, 16)?;
                         self.regs[rd] = value;
                     }
                     // LWU
                     0x6 => {
-                        let value = self.memory.load(address, 32)?;
+                        let value = self.bus.load(address, 32)?;
                         self.regs[rd] = value;
                     }
                     _ => {
@@ -230,13 +230,13 @@ impl Cpu {
                 let address = self.regs[rs1].wrapping_add(imm);
                 match funct3 {
                     // SB
-                    0x0 => self.memory.store(address, 8, self.regs[rs2])?,
+                    0x0 => self.bus.store(address, 8, self.regs[rs2])?,
                     // SH
-                    0x1 => self.memory.store(address, 16, self.regs[rs2])?,
+                    0x1 => self.bus.store(address, 16, self.regs[rs2])?,
                     // SW
-                    0x2 => self.memory.store(address, 32, self.regs[rs2])?,
+                    0x2 => self.bus.store(address, 32, self.regs[rs2])?,
                     // SD
-                    0x3 => self.memory.store(address, 64, self.regs[rs2])?,
+                    0x3 => self.bus.store(address, 64, self.regs[rs2])?,
                     _ => (),
                 }
             }
@@ -249,8 +249,8 @@ impl Cpu {
                 match (funct3, funct5) {
                     // AMOADD.W
                     (0x2, 0x00) => {
-                        self.regs[rd] = self.memory.load(self.regs[rs1], 32)?;
-                        self.memory.store(
+                        self.regs[rd] = self.bus.load(self.regs[rs1], 32)?;
+                        self.bus.store(
                             self.regs[rs1],
                             32,
                             self.regs[rd].wrapping_add(self.regs[rs2]),
@@ -258,8 +258,8 @@ impl Cpu {
                     }
                     // AMOADD.D
                     (0x3, 0x00) => {
-                        self.regs[rd] = self.memory.load(self.regs[rs1], 64)?;
-                        self.memory.store(
+                        self.regs[rd] = self.bus.load(self.regs[rs1], 64)?;
+                        self.bus.store(
                             self.regs[rs1],
                             64,
                             self.regs[rd].wrapping_add(self.regs[rs2]),
@@ -267,13 +267,13 @@ impl Cpu {
                     }
                     // AMOSWAP.W
                     (0x2, 0x01) => {
-                        self.regs[rd] = self.memory.load(self.regs[rs1], 32)?;
-                        self.memory.store(self.regs[rs1], 32, self.regs[rs2])?;
+                        self.regs[rd] = self.bus.load(self.regs[rs1], 32)?;
+                        self.bus.store(self.regs[rs1], 32, self.regs[rs2])?;
                     }
                     // AMOSWAP.D
                     (0x3, 0x01) => {
-                        self.regs[rd] = self.memory.load(self.regs[rs1], 64)?;
-                        self.memory.store(self.regs[rs1], 64, self.regs[rs2])?;
+                        self.regs[rd] = self.bus.load(self.regs[rs1], 64)?;
+                        self.bus.store(self.regs[rs1], 64, self.regs[rs2])?;
                     }
                     _ => {
                         println!(
