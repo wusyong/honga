@@ -26,7 +26,7 @@ fn main() -> std::io::Result<()> {
             Err(e) => {
                 e.get_trap(&mut cpu);
                 if e.is_fatal() {
-                    break;
+                    panic!("{:?}", e);
                 }
                 0
             }

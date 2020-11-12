@@ -3,15 +3,18 @@
 mod clint;
 mod memory;
 mod plic;
+mod uart;
 
 pub use clint::{CLINT_BASE, CLINT_SIZE};
 pub use memory::{MEMORY_BASE, MEMORY_SIZE};
 pub use plic::{PLIC_BASE, PLIC_SIZE};
+pub use uart::{UART_BASE, UART_SIZE};
 
 use crate::exception::Exception;
 use clint::Clint;
 use memory::Memory;
 use plic::Plic;
+use uart::Uart;
 
 trait Device {
     fn load(&self, addr: u64, size: usize) -> Result<u64, Exception>;
@@ -23,6 +26,7 @@ pub struct Bus {
     clint: Clint,
     memory: Memory,
     plic: Plic,
+    uart: Uart,
 }
 
 impl Bus {
@@ -31,6 +35,7 @@ impl Bus {
             memory: Memory::new(binary),
             clint: Clint::new(),
             plic: Plic::new(),
+            uart: Uart::new(),
         }
     }
 
@@ -40,6 +45,9 @@ impl Bus {
         }
         if PLIC_BASE <= addr && addr < PLIC_BASE + PLIC_SIZE {
             return self.plic.load(addr, size);
+        }
+        if UART_BASE <= addr && addr < UART_BASE + UART_SIZE {
+            return self.uart.load(addr, size);
         }
         if MEMORY_BASE <= addr {
             return self.memory.load(addr, size);
@@ -53,6 +61,9 @@ impl Bus {
         }
         if PLIC_BASE <= addr && addr < PLIC_BASE + PLIC_SIZE {
             return self.plic.store(addr, size, value);
+        }
+        if UART_BASE <= addr && addr < UART_BASE + UART_SIZE {
+            return self.uart.store(addr, size, value);
         }
         if MEMORY_BASE <= addr {
             return self.memory.store(addr, size, value);

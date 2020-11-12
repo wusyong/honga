@@ -382,7 +382,7 @@ impl Cpu {
             }
             0x63 => {
                 let imm = ((inst & 0x80000000) as i32 as i64 >> 19) as u64
-                    | ((inst & 20) & 0x7e0) as u64
+                    | ((inst >> 20) & 0x7e0) as u64
                     | ((inst & 0x80) << 4) as u64
                     | ((inst >> 7) & 0x1e) as u64;
                 match funct3 {
