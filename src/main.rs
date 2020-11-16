@@ -2,6 +2,7 @@ mod bus;
 mod cpu;
 mod csr;
 mod exception;
+mod interrupt;
 
 use crate::cpu::Cpu;
 
@@ -26,7 +27,7 @@ fn main() -> std::io::Result<()> {
             Err(e) => {
                 e.get_trap(&mut cpu);
                 if e.is_fatal() {
-                    panic!("{:?}", e);
+                    break;
                 }
                 0
             }
@@ -43,8 +44,9 @@ fn main() -> std::io::Result<()> {
             }
         }
 
-        if cpu.pc == 0 {
-            break;
+        match cpu.check_pending_interrupt() {
+            Some(interrupt) => interrupt.get_trap(&mut cpu),
+            None => {}
         }
     }
     cpu.dump_registers();

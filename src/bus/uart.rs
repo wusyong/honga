@@ -36,6 +36,8 @@ pub const UART_LSR: u64 = UART_BASE + 5;
 pub const UART_LSR_RX: u8 = 1;
 /// The transmitter (TX) bit.
 pub const UART_LSR_TX: u8 = 1 << 5;
+/// The interrupt request of UART.
+pub const UART_IRQ: u64 = 10;
 
 pub struct Uart {
     /// Pair of an array for UART buffer and a conditional variable.
@@ -76,18 +78,9 @@ impl Uart {
         Self { uart, interrupt }
     }
 
-    fn store8(&mut self, addr: u64, value: u64) {
-        let (uart, _) = &*self.uart;
-        let mut uart = uart.lock().unwrap();
-        match addr {
-            UART_THR => {
-                print!("{}", value as u8 as char);
-                io::stdout().flush().expect("failed to flush stdout");
-            }
-            _ => {
-                uart[(addr - UART_BASE) as usize] = value as u8;
-            }
-        }
+    /// Return true if an interrupt is pending. Clear the flag by swapping a value.
+    pub fn is_interrupting(&self) -> bool {
+        self.interrupt.swap(false, Ordering::Acquire)
     }
 }
 

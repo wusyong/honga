@@ -1,38 +1,35 @@
-//! Exceptions module.
+//! Interrupt module.
 
 #![allow(dead_code)]
 
 use crate::cpu::*;
 use crate::csr::*;
 
-/// Exception is a unusual condition encountered at runtime which
-/// usually relate to instructions in current hardware thread.
+/// Interrupt is an external asynchronous event that may cause
+/// a hardware thread to experience an unexpected transfer of
+/// control.
 #[repr(u64)]
 #[derive(Debug, Clone, Copy)]
-pub enum Exception {
-    InstructionAddressMisaligned,
-    InstructionAccessFault,
-    IllegalInstruction,
-    Breakpoint,
-    LoadAddressMisaligned,
-    LoadAccessFault,
-    StoreAMOAddressMisaligned,
-    StoreAMOAccessFault,
-    EnvironmentCallFromUMode,
-    EnvironmentCallFromSMode,
-    EnvironmentCallFromMMode,
-    InstructionPageFault,
-    LoadPageFault,
-    StoreAMOPageFault,
+pub enum Interrupt {
+    UserSoftwareInterrupt = 0,
+    SupervisorSoftwareInterrupt = 1,
+    MachineSoftwareInterrupt = 3,
+    UserTimerInterrupt = 4,
+    SupervisorTimerInterrupt = 5,
+    MachineTimerInterrupt = 7,
+    UserExternalInterrupt = 8,
+    SupervisorExternalInterrupt = 9,
+    MachineExternalInterrupt = 11,
 }
 
-impl Exception {
+impl Interrupt {
     /// Handle trap from current exception.
     pub fn get_trap(&self, cpu: &mut Cpu) {
         let exception_pc = cpu.pc.wrapping_sub(4);
         let previous_mode = cpu.mode;
 
-        let cause = *self as u64;
+        // Set the interrupt bit.
+        let cause = *self as u64 | (1 << 63);
         if (previous_mode as u8 <= Mode::Supervisor as u8)
             && ((cpu.load_csr(MEDELEG).wrapping_shr(cause as u32)) & 1 != 0)
         {
@@ -40,7 +37,11 @@ impl Exception {
             cpu.mode = Mode::Supervisor;
 
             // Set the program counter to STVEC.
-            cpu.pc = cpu.load_csr(STVEC) & !1;
+            let vector = match cpu.load_csr(STVEC) & 1 {
+                1 => 4 * cause, // vectored mode
+                _ => 0,         // direct mode
+            };
+            cpu.pc = (cpu.load_csr(STVEC) & !1) + vector;
 
             cpu.store_csr(SEPC, exception_pc & !1);
             cpu.store_csr(SCAUSE, cause);
@@ -63,7 +64,11 @@ impl Exception {
             cpu.mode = Mode::Machine;
 
             // Set the program counter to MTVEC.
-            cpu.pc = cpu.load_csr(MTVEC) & !1;
+            let vector = match cpu.load_csr(MTVEC) & 1 {
+                1 => 4 * cause, // vectored mode
+                _ => 0,         // direct mode
+            };
+            cpu.pc = (cpu.load_csr(MTVEC) & !1) + vector;
 
             cpu.store_csr(MEPC, exception_pc & !1);
             cpu.store_csr(MCAUSE, cause);
@@ -78,17 +83,6 @@ impl Exception {
             );
             cpu.store_csr(MSTATUS, cpu.load_csr(MSTATUS) & !(1 << 3));
             cpu.store_csr(MSTATUS, cpu.load_csr(MSTATUS) & !(0b11 << 11));
-        }
-    }
-
-    pub fn is_fatal(&self) -> bool {
-        match self {
-            Exception::InstructionAddressMisaligned
-            | Exception::InstructionAccessFault
-            | Exception::LoadAccessFault
-            | Exception::StoreAMOAddressMisaligned
-            | Exception::StoreAMOAccessFault => true,
-            _ => false,
         }
     }
 }

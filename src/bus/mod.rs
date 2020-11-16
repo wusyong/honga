@@ -7,8 +7,8 @@ mod uart;
 
 pub use clint::{CLINT_BASE, CLINT_SIZE};
 pub use memory::{MEMORY_BASE, MEMORY_SIZE};
-pub use plic::{PLIC_BASE, PLIC_SIZE};
-pub use uart::{UART_BASE, UART_SIZE};
+pub use plic::{PLIC_BASE, PLIC_SCLAIM, PLIC_SIZE};
+pub use uart::{UART_BASE, UART_IRQ, UART_SIZE};
 
 use crate::exception::Exception;
 use clint::Clint;
@@ -26,7 +26,7 @@ pub struct Bus {
     clint: Clint,
     memory: Memory,
     plic: Plic,
-    uart: Uart,
+    pub uart: Uart,
 }
 
 impl Bus {

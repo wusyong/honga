@@ -1,6 +1,15 @@
-use crate::bus::{Bus, MEMORY_BASE, MEMORY_SIZE};
-use crate::csr;
+use crate::bus::{Bus, MEMORY_BASE, MEMORY_SIZE, PLIC_SCLAIM, UART_IRQ};
+use crate::csr::*;
 use crate::exception::Exception;
+use crate::interrupt::Interrupt;
+
+// MIP fields.
+const MIP_SSIP: u64 = 1 << 1;
+const MIP_MSIP: u64 = 1 << 3;
+const MIP_STIP: u64 = 1 << 5;
+const MIP_MTIP: u64 = 1 << 7;
+const MIP_SEIP: u64 = 1 << 9;
+const MIP_MEIP: u64 = 1 << 11;
 
 /// Privileged mode.
 #[repr(u8)]
@@ -57,18 +66,20 @@ impl Cpu {
 
     /// Print values of selected CSRs.
     pub fn dump_csr(&self) {
-        println!("sstatus={:>#18x}", self.load_csr(csr::SSTATUS));
-        println!("scause ={:>#18x}", self.load_csr(csr::STVEC));
-        println!("sepc   ={:>#18x}", self.load_csr(csr::SEPC));
-        println!("mstatus={:>#18x}", self.load_csr(csr::MSTATUS));
-        println!("mcause ={:>#18x}", self.load_csr(csr::MTVEC));
-        println!("mepc   ={:>#18x}", self.load_csr(csr::MEPC));
+        println!("sstatus={:>#18x}", self.load_csr(SSTATUS));
+        println!("stvec ={:>#18x}", self.load_csr(STVEC));
+        println!("sepc   ={:>#18x}", self.load_csr(SEPC));
+        println!("scause ={:>#18x}", self.load_csr(SCAUSE));
+        println!("mstatus={:>#18x}", self.load_csr(MSTATUS));
+        println!("mtvec ={:>#18x}", self.load_csr(MTVEC));
+        println!("mepc   ={:>#18x}", self.load_csr(MEPC));
+        println!("mcause ={:>#18x}", self.load_csr(MCAUSE));
     }
 
     /// Load the value from the CSR
     pub fn load_csr(&self, address: usize) -> u64 {
         match address {
-            csr::SIE => self.csr[csr::MIE] & self.csr[csr::MIDELEG],
+            SIE => self.csr[MIE] & self.csr[MIDELEG],
             _ => self.csr[address],
         }
     }
@@ -76,12 +87,72 @@ impl Cpu {
     /// Store the value to the CSR
     pub fn store_csr(&mut self, address: usize, value: u64) {
         match address {
-            csr::SIE => {
-                self.csr[csr::MIE] = (self.csr[csr::MIE] & !self.csr[csr::MIDELEG])
-                    | (value & self.csr[csr::MIDELEG])
+            SIE => {
+                self.csr[MIE] = (self.csr[MIE] & !self.csr[MIDELEG]) | (value & self.csr[MIDELEG])
             }
             _ => self.csr[address] = value,
         }
+    }
+
+    pub fn check_pending_interrupt(&mut self) -> Option<Interrupt> {
+        match self.mode {
+            Mode::Machine => {
+                // Check if the MIE bit is enabled.
+                if (self.load_csr(MSTATUS) >> 3) & 1 == 0 {
+                    return None;
+                }
+            }
+            Mode::Supervisor => {
+                // Check if the SIE bit is enabled.
+                if (self.load_csr(SSTATUS) >> 1) & 1 == 0 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+
+        // Check external interrupt for uart.
+        let irq;
+        if self.bus.uart.is_interrupting() {
+            irq = UART_IRQ;
+        } else {
+            irq = 0;
+        }
+
+        if irq != 0 {
+            self.bus
+                .store(PLIC_SCLAIM, 32, irq)
+                .expect("failed to write an IRQ to the PLIC_SCLAIM");
+            self.store_csr(MIP, self.load_csr(MIP) | MIP_SEIP);
+        }
+
+        let pending = self.load_csr(MIE) & self.load_csr(MIP);
+
+        if (pending & MIP_MEIP) != 0 {
+            self.store_csr(MIP, self.load_csr(MIP) & !MIP_MEIP);
+            return Some(Interrupt::MachineExternalInterrupt);
+        }
+        if (pending & MIP_MSIP) != 0 {
+            self.store_csr(MIP, self.load_csr(MIP) & !MIP_MSIP);
+            return Some(Interrupt::MachineSoftwareInterrupt);
+        }
+        if (pending & MIP_MTIP) != 0 {
+            self.store_csr(MIP, self.load_csr(MIP) & !MIP_MTIP);
+            return Some(Interrupt::MachineTimerInterrupt);
+        }
+        if (pending & MIP_SEIP) != 0 {
+            self.store_csr(MIP, self.load_csr(MIP) & !MIP_SEIP);
+            return Some(Interrupt::SupervisorExternalInterrupt);
+        }
+        if (pending & MIP_SSIP) != 0 {
+            self.store_csr(MIP, self.load_csr(MIP) & !MIP_SSIP);
+            return Some(Interrupt::SupervisorSoftwareInterrupt);
+        }
+        if (pending & MIP_STIP) != 0 {
+            self.store_csr(MIP, self.load_csr(MIP) & !MIP_STIP);
+            return Some(Interrupt::SupervisorTimerInterrupt);
+        }
+        None
     }
 
     /// Fetch the instruction from memory.
@@ -103,7 +174,6 @@ impl Cpu {
 
         // Emulate that register x0 is hardwired with all bits equal to 0.
         self.regs[0] = 0;
-
         match opcode {
             0x03 => {
                 let imm = ((inst as i32 as i64) >> 20) as u64;
@@ -436,7 +506,7 @@ impl Cpu {
                 self.regs[rd] = self.pc;
 
                 let imm = ((((inst & 0xfff00000) as i32) as i64) >> 20) as u64;
-                self.pc = self.regs[rs1].wrapping_add(imm) & !1;
+                self.pc = (self.regs[rs1].wrapping_add(imm)) & !1;
             }
             // JAL
             0x6f => {
@@ -471,32 +541,26 @@ impl Cpu {
                             }
                             // SRET
                             (0x2, 0x8) => {
-                                self.pc = self.load_csr(csr::SEPC);
+                                self.pc = self.load_csr(SEPC);
 
-                                let sstatus = self.load_csr(csr::SSTATUS);
+                                let sstatus = self.load_csr(SSTATUS);
                                 self.mode = match (sstatus >> 8) & 1 {
                                     1 => Mode::Supervisor,
                                     _ => Mode::User,
                                 };
 
                                 match (sstatus >> 5) & 1 {
-                                    1 => self.store_csr(csr::SSTATUS, sstatus | (1 << 1)),
-                                    _ => self.store_csr(csr::SSTATUS, sstatus & !(1 << 1)),
+                                    1 => self.store_csr(SSTATUS, sstatus | (1 << 1)),
+                                    _ => self.store_csr(SSTATUS, sstatus & !(1 << 1)),
                                 }
-                                self.store_csr(
-                                    csr::SSTATUS,
-                                    self.load_csr(csr::SSTATUS) | (1 << 5),
-                                );
-                                self.store_csr(
-                                    csr::SSTATUS,
-                                    self.load_csr(csr::SSTATUS) & !(1 << 8),
-                                );
+                                self.store_csr(SSTATUS, self.load_csr(SSTATUS) | (1 << 5));
+                                self.store_csr(SSTATUS, self.load_csr(SSTATUS) & !(1 << 8));
                             }
                             // MRET
                             (0x2, 0x18) => {
-                                self.pc = self.load_csr(csr::MEPC);
+                                self.pc = self.load_csr(MEPC);
 
-                                let mstatus = self.load_csr(csr::MSTATUS);
+                                let mstatus = self.load_csr(MSTATUS);
                                 self.mode = match (mstatus >> 11) & 0b11 {
                                     2 => Mode::Machine,
                                     1 => Mode::Supervisor,
@@ -504,18 +568,12 @@ impl Cpu {
                                 };
 
                                 match (mstatus >> 7) & 1 {
-                                    1 => self.store_csr(csr::MSTATUS, mstatus | (1 << 3)),
-                                    _ => self.store_csr(csr::MSTATUS, mstatus & !(1 << 3)),
+                                    1 => self.store_csr(MSTATUS, mstatus | (1 << 3)),
+                                    _ => self.store_csr(MSTATUS, mstatus & !(1 << 3)),
                                 }
 
-                                self.store_csr(
-                                    csr::MSTATUS,
-                                    self.load_csr(csr::MSTATUS) | (1 << 7),
-                                );
-                                self.store_csr(
-                                    csr::MSTATUS,
-                                    self.load_csr(csr::MSTATUS) & !(3 << 11),
-                                );
+                                self.store_csr(MSTATUS, self.load_csr(MSTATUS) | (1 << 7));
+                                self.store_csr(MSTATUS, self.load_csr(MSTATUS) & !(3 << 11));
                             }
                             // SFENCE.VMA
                             (_, 0x9) => (),
