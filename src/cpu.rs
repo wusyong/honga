@@ -1,4 +1,6 @@
-use crate::bus::{Bus, MEMORY_BASE, MEMORY_SIZE, PLIC_SCLAIM, UART_IRQ};
+use crate::bus::{
+    virtio::Virtio, Bus, MEMORY_BASE, MEMORY_SIZE, PLIC_SCLAIM, UART_IRQ, VIRTIO_IRQ,
+};
 use crate::csr::*;
 use crate::exception::Exception;
 use crate::interrupt::Interrupt;
@@ -37,7 +39,7 @@ pub struct Cpu {
 
 impl Cpu {
     /// Create a new `Cpu` object.
-    pub fn new(binary: Vec<u8>) -> Self {
+    pub fn new(binary: Vec<u8>, image: Vec<u8>) -> Self {
         let mut regs = [0; 32];
         // Set the register x2 with the size of a memory when a CPU is instantiated.
         regs[2] = MEMORY_SIZE + MEMORY_BASE;
@@ -45,7 +47,7 @@ impl Cpu {
         Self {
             regs,
             pc: MEMORY_BASE,
-            bus: Bus::new(binary),
+            bus: Bus::new(binary, image),
             csr: [0; 4096],
             mode: Mode::Machine,
         }
@@ -115,6 +117,11 @@ impl Cpu {
         let irq;
         if self.bus.uart.is_interrupting() {
             irq = UART_IRQ;
+        } else if self.bus.virtio.is_interrupting() {
+            // Access disk by direct memory access (DMA). An interrupt is raised after a disk
+            // access is done.
+            Virtio::disk_access(self);
+            irq = VIRTIO_IRQ;
         } else {
             irq = 0;
         }
@@ -313,8 +320,8 @@ impl Cpu {
             // RV64A: "A" standard extension for atomic instructions
             0x2f => {
                 let funct5 = (funct7 & 0x7c) >> 2;
-                let aq = (funct7 & 0x02) >> 1;
-                let rl = funct7 & 0x01;
+                let _aq = (funct7 & 0x02) >> 1;
+                let _rl = funct7 & 0x01;
 
                 match (funct3, funct5) {
                     // AMOADD.W
