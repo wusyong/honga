@@ -89,7 +89,7 @@ impl Virtio {
             queue_sel: 0,
             queue_num: 0,
             queue_pfn: 0,
-            queue_notify: 999,
+            queue_notify: 9999,
             status: 0,
             disk,
         }

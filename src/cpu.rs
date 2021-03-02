@@ -230,6 +230,20 @@ impl Cpu {
                     }
                 }
             }
+            0x0f => {
+                // A fence instruction does nothing because this emulator executes an
+                // instruction sequentially on a single thread.
+                match funct3 {
+                    0x0 => {} // fence
+                    _ => {
+                        println!(
+                            "not implemented yet: opcode {:#x} funct3 {:#x}",
+                            opcode, funct3
+                        );
+                        return Err(Exception::IllegalInstruction);
+                    }
+                }
+            }
             0x13 => {
                 let imm = ((inst & 0xfff00000) as i32 as i64 >> 20) as u64;
                 let shamt = (imm & 0x3f) as u32;
@@ -326,31 +340,35 @@ impl Cpu {
                 match (funct3, funct5) {
                     // AMOADD.W
                     (0x2, 0x00) => {
-                        self.regs[rd] = self.bus.load(self.regs[rs1], 32)?;
+                        let tmp = self.bus.load(self.regs[rs1], 32)?;
                         self.bus.store(
                             self.regs[rs1],
                             32,
-                            self.regs[rd].wrapping_add(self.regs[rs2]),
+                            tmp.wrapping_add(self.regs[rs2]),
                         )?;
+                        self.regs[rd] = tmp;
                     }
                     // AMOADD.D
                     (0x3, 0x00) => {
-                        self.regs[rd] = self.bus.load(self.regs[rs1], 64)?;
+                        let tmp = self.bus.load(self.regs[rs1], 64)?;
                         self.bus.store(
                             self.regs[rs1],
                             64,
-                            self.regs[rd].wrapping_add(self.regs[rs2]),
+                            tmp.wrapping_add(self.regs[rs2]),
                         )?;
+                        self.regs[rd] = tmp;
                     }
                     // AMOSWAP.W
                     (0x2, 0x01) => {
-                        self.regs[rd] = self.bus.load(self.regs[rs1], 32)?;
+                        let tmp = self.bus.load(self.regs[rs1], 32)?;
                         self.bus.store(self.regs[rs1], 32, self.regs[rs2])?;
+                        self.regs[rd] = tmp;
                     }
                     // AMOSWAP.D
                     (0x3, 0x01) => {
-                        self.regs[rd] = self.bus.load(self.regs[rs1], 64)?;
+                        let tmp = self.bus.load(self.regs[rs1], 64)?;
                         self.bus.store(self.regs[rs1], 64, self.regs[rs2])?;
+                        self.regs[rd] = tmp;
                     }
                     _ => {
                         println!(
@@ -367,7 +385,7 @@ impl Cpu {
                     // ADD
                     (0x0, 0x00) => self.regs[rd] = self.regs[rs1].wrapping_add(self.regs[rs2]),
                     // MUL
-                    (0x0, 0x01) => self.regs[rd] = self.regs[rs1].wrapping_add(self.regs[rs2]),
+                    (0x0, 0x01) => self.regs[rd] = self.regs[rs1].wrapping_mul(self.regs[rs2]),
                     // SUB
                     (0x0, 0x20) => self.regs[rd] = self.regs[rs1].wrapping_sub(self.regs[rs2]),
                     // SLL
@@ -510,10 +528,10 @@ impl Cpu {
             }
             // JALR
             0x67 => {
-                self.regs[rd] = self.pc;
-
+                let tmp = self.pc;
                 let imm = ((((inst & 0xfff00000) as i32) as i64) >> 20) as u64;
                 self.pc = (self.regs[rs1].wrapping_add(imm)) & !1;
+                self.regs[rd] = tmp;
             }
             // JAL
             0x6f => {
@@ -595,18 +613,21 @@ impl Cpu {
                     }
                     // CSRRW
                     0x1 => {
-                        self.regs[rd] = self.load_csr(address);
+                        let tmp = self.load_csr(address);
                         self.store_csr(address, self.regs[rs1]);
+                        self.regs[rd] = tmp;
                     }
                     // CSRRS
                     0x2 => {
-                        self.regs[rd] = self.load_csr(address);
-                        self.store_csr(address, self.regs[rd] | self.regs[rs1]);
+                        let tmp = self.load_csr(address);
+                        self.store_csr(address, tmp | self.regs[rs1]);
+                        self.regs[rd] = tmp;
                     }
                     // CSRRC
                     0x3 => {
-                        self.regs[rd] = self.load_csr(address);
-                        self.store_csr(address, self.regs[rd] & !self.regs[rs1]);
+                        let tmp = self.load_csr(address);
+                        self.store_csr(address, tmp & !self.regs[rs1]);
+                        self.regs[rd] = tmp;
                     }
                     // CSRRWI
                     0x5 => {
@@ -617,14 +638,16 @@ impl Cpu {
                     // CSRRSI
                     0x6 => {
                         let uimm = rs1 as u64;
-                        self.regs[rd] = self.load_csr(address);
-                        self.store_csr(address, self.regs[rd] | uimm);
+                        let tmp = self.load_csr(address);
+                        self.store_csr(address, tmp | uimm);
+                        self.regs[rd] = tmp;
                     }
                     // CSRRCI
                     0x7 => {
                         let uimm = rs1 as u64;
-                        self.regs[rd] = self.load_csr(address);
-                        self.store_csr(address, self.regs[rd] & !uimm);
+                        let tmp = self.load_csr(address);
+                        self.store_csr(address, tmp & !uimm);
+                        self.regs[rd] = tmp;
                     }
                     _ => {
                         println!(
