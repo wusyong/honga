@@ -13,6 +13,9 @@ const MIP_MTIP: u64 = 1 << 7;
 const MIP_SEIP: u64 = 1 << 9;
 const MIP_MEIP: u64 = 1 << 11;
 
+/// The page size (4 KiB) for the virtual memory system.
+const PAGE_SIZE: u64 = 4096;
+
 /// Privileged mode.
 #[repr(u8)]
 #[derive(Debug, Copy, Clone)]
@@ -20,6 +23,13 @@ pub enum Mode {
     User = 0,
     Supervisor = 1,
     Machine = 3,
+}
+
+#[derive(Debug, PartialEq, PartialOrd)]
+pub enum AccessType {
+    Instruction,
+    Load,
+    Store,
 }
 
 /// The CPU contains registers, a program coutner, and memory.
@@ -35,6 +45,10 @@ pub struct Cpu {
     pub csr: [u64; 4096],
     /// Current privilege mode.
     pub mode: Mode,
+    /// SV39 paging flag.
+    pub enable_paging: bool,
+    /// physical page number (PPN) × PAGE_SIZE (4096).
+    pub page_table: u64,
 }
 
 impl Cpu {
@@ -50,6 +64,8 @@ impl Cpu {
             bus: Bus::new(binary, image),
             csr: [0; 4096],
             mode: Mode::Machine,
+            enable_paging: false,
+            page_table: 0,
         }
     }
 
@@ -162,9 +178,152 @@ impl Cpu {
         None
     }
 
+    fn update_paging(&mut self, csr_addr: usize) {
+        if csr_addr != SATP {
+            return;
+        }
+
+        self.page_table = (self.load_csr(SATP) & ((1 << 44) - 1)) * PAGE_SIZE;
+        let mode = self.load_csr(SATP) >> 60;
+        if mode == 8 {
+            self.enable_paging = true;
+        } else {
+            self.enable_paging = false;
+        }
+    }
+
+    fn translate(&mut self, addr: u64, access_type: AccessType) -> Result<u64, Exception> {
+        if !self.enable_paging {
+            return Ok(addr);
+        }
+
+        // The following comments are cited from 4.3.2 Virtual Address Translation Process
+        // in "The RISC-V Instruction Set Manual Volume II-Privileged Architecture_20190608".
+
+        // "A virtual address va is translated into a physical address pa as follows:"
+        let levels = 3;
+        let vpn = [
+            (addr >> 12) & 0x1ff,
+            (addr >> 21) & 0x1ff,
+            (addr >> 30) & 0x1ff,
+        ];
+
+        // "1. Let a be satp.ppn × PAGESIZE, and let i = LEVELS − 1. (For Sv32, PAGESIZE=212
+        //     and LEVELS=2.)"
+        let mut a = self.page_table;
+        let mut i: i64 = levels - 1;
+        let mut pte;
+        loop {
+            // "2. Let pte be the value of the PTE at address a+va.vpn[i]×PTESIZE. (For Sv32,
+            //     PTESIZE=4.) If accessing pte violates a PMA or PMP check, raise an access
+            //     exception corresponding to the original access type."
+            pte = self.bus.load(a + vpn[i as usize] * 8, 64)?;
+
+            // "3. If pte.v = 0, or if pte.r = 0 and pte.w = 1, stop and raise a page-fault
+            //     exception corresponding to the original access type."
+            let v = pte & 1;
+            let r = (pte >> 1) & 1;
+            let w = (pte >> 2) & 1;
+            let x = (pte >> 3) & 1;
+            if v == 0 || (r == 0 && w == 1) {
+                match access_type {
+                    AccessType::Instruction => return Err(Exception::InstructionPageFault),
+                    AccessType::Load => return Err(Exception::LoadPageFault),
+                    AccessType::Store => return Err(Exception::StoreAMOPageFault),
+                }
+            }
+
+            // "4. Otherwise, the PTE is valid. If pte.r = 1 or pte.x = 1, go to step 5.
+            //     Otherwise, this PTE is a pointer to the next level of the page table.
+            //     Let i = i − 1. If i < 0, stop and raise a page-fault exception
+            //     corresponding to the original access type. Otherwise,
+            //     let a = pte.ppn × PAGESIZE and go to step 2."
+            if r == 1 || x == 1 {
+                break;
+            }
+            i -= 1;
+            let ppn = (pte >> 10) & 0x0fff_ffff_ffff;
+            a = ppn * PAGE_SIZE;
+            if i < 0 {
+                match access_type {
+                    AccessType::Instruction => return Err(Exception::InstructionPageFault),
+                    AccessType::Load => return Err(Exception::LoadPageFault),
+                    AccessType::Store => return Err(Exception::StoreAMOPageFault),
+                }
+            }
+        }
+
+        // A leaf PTE has been found.
+        let ppn = [
+            (pte >> 10) & 0x1ff,
+            (pte >> 19) & 0x1ff,
+            (pte >> 28) & 0x03ff_ffff,
+        ];
+
+        // We skip implementing from step 5 to 7.
+
+        // "5. A leaf PTE has been found. Determine if the requested dram access is allowed by
+        //     the pte.r, pte.w, pte.x, and pte.u bits, given the current privilege mode and the
+        //     value of the SUM and MXR fields of the mstatus register. If not, stop and raise a
+        //     page-fault exception corresponding to the original access type."
+
+        // "6. If i > 0 and pte.ppn[i − 1 : 0] ̸= 0, this is a misaligned superpage; stop and
+        //     raise a page-fault exception corresponding to the original access type."
+
+        // "7. If pte.a = 0, or if the dram access is a store and pte.d = 0, either raise a
+        //     page-fault exception corresponding to the original access type, or:
+        //     • Set pte.a to 1 and, if the dram access is a store, also set pte.d to 1.
+        //     • If this access violates a PMA or PMP check, raise an access exception
+        //     corresponding to the original access type.
+        //     • This update and the loading of pte in step 2 must be atomic; in particular, no
+        //     intervening store to the PTE may be perceived to have occurred in-between."
+
+        // "8. The translation is successful. The translated physical address is given as
+        //     follows:
+        //     • pa.pgoff = va.pgoff.
+        //     • If i > 0, then this is a superpage translation and pa.ppn[i−1:0] =
+        //     va.vpn[i−1:0].
+        //     • pa.ppn[LEVELS−1:i] = pte.ppn[LEVELS−1:i]."
+        let offset = addr & 0xfff;
+        match i {
+            0 => {
+                let ppn = (pte >> 10) & 0x0fff_ffff_ffff;
+                Ok((ppn << 12) | offset)
+            }
+            1 => {
+                // Superpage translation. A superpage is a dram page of larger size than an
+                // ordinary page (4 KiB). It reduces TLB misses and improves performance.
+                Ok((ppn[2] << 30) | (ppn[1] << 21) | (vpn[0] << 12) | offset)
+            }
+            2 => {
+                // Superpage translation. A superpage is a dram page of larger size than an
+                // ordinary page (4 KiB). It reduces TLB misses and improves performance.
+                Ok((ppn[2] << 30) | (vpn[1] << 21) | (vpn[0] << 12) | offset)
+            }
+            _ => match access_type {
+                AccessType::Instruction => return Err(Exception::InstructionPageFault),
+                AccessType::Load => return Err(Exception::LoadPageFault),
+                AccessType::Store => return Err(Exception::StoreAMOPageFault),
+            },
+        }
+    }
+
+    /// Load a value from a memory.
+    pub fn load(&mut self, addr: u64, size: usize) -> Result<u64, Exception> {
+        let p_addr = self.translate(addr, AccessType::Load)?;
+        self.bus.load(p_addr, size)
+    }
+
+    /// Store a value to a memory.
+    pub fn store(&mut self, addr: u64, size: usize, value: u64) -> Result<(), Exception> {
+        let p_addr = self.translate(addr, AccessType::Store)?;
+        self.bus.store(p_addr, size, value)
+    }
+
     /// Fetch the instruction from memory.
-    pub fn fetch(&self) -> Result<u32, Exception> {
-        match self.bus.load(self.pc, 32) {
+    pub fn fetch(&mut self) -> Result<u32, Exception> {
+        let p_pc = self.translate(self.pc, AccessType::Instruction)?;
+        match self.bus.load(p_pc, 32) {
             Ok(v) => Ok(v as u32),
             Err(_) => Err(Exception::InstructionAccessFault),
         }
@@ -188,37 +347,37 @@ impl Cpu {
                 match funct3 {
                     // LB
                     0x0 => {
-                        let value = self.bus.load(address, 8)?;
+                        let value = self.load(address, 8)?;
                         self.regs[rd] = value as i8 as i64 as u64;
                     }
                     // LH
                     0x1 => {
-                        let value = self.bus.load(address, 16)?;
+                        let value = self.load(address, 16)?;
                         self.regs[rd] = value as i16 as i64 as u64;
                     }
                     // LW
                     0x2 => {
-                        let value = self.bus.load(address, 32)?;
+                        let value = self.load(address, 32)?;
                         self.regs[rd] = value as i32 as i64 as u64;
                     }
                     // LD
                     0x3 => {
-                        let value = self.bus.load(address, 64)?;
+                        let value = self.load(address, 64)?;
                         self.regs[rd] = value as i64 as u64;
                     }
                     // LBU
                     0x4 => {
-                        let value = self.bus.load(address, 8)?;
+                        let value = self.load(address, 8)?;
                         self.regs[rd] = value;
                     }
                     // LHU
                     0x5 => {
-                        let value = self.bus.load(address, 16)?;
+                        let value = self.load(address, 16)?;
                         self.regs[rd] = value;
                     }
                     // LWU
                     0x6 => {
-                        let value = self.bus.load(address, 32)?;
+                        let value = self.load(address, 32)?;
                         self.regs[rd] = value;
                     }
                     _ => {
@@ -258,11 +417,11 @@ impl Cpu {
                     0x3 => self.regs[rd] = (self.regs[rs1] < imm) as u64,
                     // XORI
                     0x4 => self.regs[rd] = self.regs[rs1] ^ imm,
-                    0x5 => match funct7 {
+                    0x5 => match funct7 >> 1 {
                         // SRLI
                         0x00 => self.regs[rd] = self.regs[rs1].wrapping_shr(shamt),
                         // SRAI
-                        0x20 => self.regs[rd] = (self.regs[rs1] as i64).wrapping_shr(shamt) as u64,
+                        0x10 => self.regs[rd] = (self.regs[rs1] as i64).wrapping_shr(shamt) as u64,
                         _ => (),
                     },
                     // ORI
@@ -321,13 +480,13 @@ impl Cpu {
                 let address = self.regs[rs1].wrapping_add(imm);
                 match funct3 {
                     // SB
-                    0x0 => self.bus.store(address, 8, self.regs[rs2])?,
+                    0x0 => self.store(address, 8, self.regs[rs2])?,
                     // SH
-                    0x1 => self.bus.store(address, 16, self.regs[rs2])?,
+                    0x1 => self.store(address, 16, self.regs[rs2])?,
                     // SW
-                    0x2 => self.bus.store(address, 32, self.regs[rs2])?,
+                    0x2 => self.store(address, 32, self.regs[rs2])?,
                     // SD
-                    0x3 => self.bus.store(address, 64, self.regs[rs2])?,
+                    0x3 => self.store(address, 64, self.regs[rs2])?,
                     _ => (),
                 }
             }
@@ -340,8 +499,8 @@ impl Cpu {
                 match (funct3, funct5) {
                     // AMOADD.W
                     (0x2, 0x00) => {
-                        let tmp = self.bus.load(self.regs[rs1], 32)?;
-                        self.bus.store(
+                        let tmp = self.load(self.regs[rs1], 32)?;
+                        self.store(
                             self.regs[rs1],
                             32,
                             tmp.wrapping_add(self.regs[rs2]),
@@ -350,8 +509,8 @@ impl Cpu {
                     }
                     // AMOADD.D
                     (0x3, 0x00) => {
-                        let tmp = self.bus.load(self.regs[rs1], 64)?;
-                        self.bus.store(
+                        let tmp = self.load(self.regs[rs1], 64)?;
+                        self.store(
                             self.regs[rs1],
                             64,
                             tmp.wrapping_add(self.regs[rs2]),
@@ -360,14 +519,14 @@ impl Cpu {
                     }
                     // AMOSWAP.W
                     (0x2, 0x01) => {
-                        let tmp = self.bus.load(self.regs[rs1], 32)?;
-                        self.bus.store(self.regs[rs1], 32, self.regs[rs2])?;
+                        let tmp = self.load(self.regs[rs1], 32)?;
+                        self.store(self.regs[rs1], 32, self.regs[rs2])?;
                         self.regs[rd] = tmp;
                     }
                     // AMOSWAP.D
                     (0x3, 0x01) => {
-                        let tmp = self.bus.load(self.regs[rs1], 64)?;
-                        self.bus.store(self.regs[rs1], 64, self.regs[rs2])?;
+                        let tmp = self.load(self.regs[rs1], 64)?;
+                        self.store(self.regs[rs1], 64, self.regs[rs2])?;
                         self.regs[rd] = tmp;
                     }
                     _ => {
@@ -616,24 +775,28 @@ impl Cpu {
                         let tmp = self.load_csr(address);
                         self.store_csr(address, self.regs[rs1]);
                         self.regs[rd] = tmp;
+                        self.update_paging(address);
                     }
                     // CSRRS
                     0x2 => {
                         let tmp = self.load_csr(address);
                         self.store_csr(address, tmp | self.regs[rs1]);
                         self.regs[rd] = tmp;
+                        self.update_paging(address);
                     }
                     // CSRRC
                     0x3 => {
                         let tmp = self.load_csr(address);
                         self.store_csr(address, tmp & !self.regs[rs1]);
                         self.regs[rd] = tmp;
+                        self.update_paging(address);
                     }
                     // CSRRWI
                     0x5 => {
                         let uimm = rs1 as u64;
                         self.regs[rd] = self.load_csr(address);
                         self.store_csr(address, uimm);
+                        self.update_paging(address);
                     }
                     // CSRRSI
                     0x6 => {
@@ -641,6 +804,7 @@ impl Cpu {
                         let tmp = self.load_csr(address);
                         self.store_csr(address, tmp | uimm);
                         self.regs[rd] = tmp;
+                        self.update_paging(address);
                     }
                     // CSRRCI
                     0x7 => {
@@ -648,6 +812,7 @@ impl Cpu {
                         let tmp = self.load_csr(address);
                         self.store_csr(address, tmp & !uimm);
                         self.regs[rd] = tmp;
+                        self.update_paging(address);
                     }
                     _ => {
                         println!(

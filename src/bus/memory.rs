@@ -70,9 +70,6 @@ impl Memory {
 
     fn store_8bits(&mut self, address: u64, value: u64) {
         let index = (address - MEMORY_BASE) as usize;
-        if index == 134217728 {
-            dbg!(1);
-        }
         self.0[index] = value as u8;
     }
 

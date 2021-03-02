@@ -26,12 +26,7 @@ fn main() -> std::io::Result<()> {
 
     let mut cpu = Cpu::new(binary, image);
     // Instruction cycle
-    let mut count = 0;
     loop {
-        count += 1;
-        if count == 402165650 {
-            dbg!(1);
-        }
         // Fetch instruction
         let inst = match cpu.fetch() {
             Ok(i) => i,
